@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>PartDbProcurement</RootNamespace>
+    <AssemblyName>PartDbProcurement</AssemblyName>
+    <Product>Part-DB Procurement</Product>
+    <Version>1.0.0</Version>
+    <!-- No NuGet packages: Excel is written natively, DPAPI is part of the Windows Desktop runtime. -->
+  </PropertyGroup>
+
+</Project>
