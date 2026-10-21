@@ -4,7 +4,14 @@
 
 You want to build *N* units of a board. What do you need to order so that you can build them *and* still have your minimum stock afterwards?
 
-Part-DB's projects tell you whether stock covers a build, but they ignore minimum stock and don't produce an order list. The stock fields that the KiCad HTTP library copies into your schematic go stale as soon as you book anything. This tool reads the KiCad project files directly, looks up every part live in Part-DB, and writes an Excel order list grouped by supplier.
+## Why?
+
+The two obvious routes are both cumbersome:
+
+- **Part-DB projects.** To get a list you first have to create a project in Part-DB and import the BOM, and keep it in sync with every schematic change. Even then, the build view only tells you whether stock covers the build. It ignores minimum stock and doesn't give you an order list.
+- **The stock fields in KiCad.** The KiCad HTTP library copies Part-DB's stock into each symbol when the symbol is placed. KiCad only refreshes those values when you run *Update Symbols from Library…* on **all** symbols. That modifies the schematic, so with Git you end up committing yet another, basically unchanged, version of your design just to get current stock numbers. Every stock booking in Part-DB also shows up as a "library symbol mismatch" in the ERC.
+
+This tool avoids both. It reads the KiCad project files directly, without changing them, looks up every part live in Part-DB, and writes an Excel order list grouped by supplier.
 
 <!-- Screenshots: add docs/dialog.png and docs/orderlist.png -->
 ![Dialog](docs/dialog.png)
@@ -36,6 +43,8 @@ Part-DB's projects tell you whether stock covers a build, but they ignore minimu
    - **Number of builds**
    - **Part-DB URL**, e.g. `http://partdb.local:8080`. The KiCad API URL works too; only scheme, host and port are used.
    - **API token**
+
+   Windows SmartScreen may say *"Windows protected your PC"* on first start, because the exe is not code-signed. Click **More info → Run anyway**.
 4. Press **Test** to check the connection, then **Pull from Part-DB**, then **Export to Excel…**.
 
 Changing the number of builds recalculates immediately. Double-click a row to open the part in Part-DB.

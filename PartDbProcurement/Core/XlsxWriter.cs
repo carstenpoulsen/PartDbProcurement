@@ -36,6 +36,20 @@ public static class XlsxWriter
     public static void Save(string path, IReadOnlyList<XSheet> sheets)
     {
         var tmp = path + ".tmp";
+        try
+        {
+            WritePackage(tmp, sheets);
+            File.Move(tmp, path, overwrite: true);
+        }
+        finally
+        {
+            // Never leave a stray .tmp file behind, e.g. when the target is open in Excel.
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    private static void WritePackage(string tmp, IReadOnlyList<XSheet> sheets)
+    {
         using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write))
         using (var zip = new ZipArchive(fs, ZipArchiveMode.Create))
         {
@@ -48,7 +62,6 @@ public static class XlsxWriter
             Put(zip, "xl/styles.xml", Styles);
             for (int i = 0; i < sheets.Count; i++) Put(zip, $"xl/worksheets/sheet{i + 1}.xml", Sheet(sheets[i]));
         }
-        File.Move(tmp, path, overwrite: true);
     }
 
     private static void Put(ZipArchive zip, string name, string content)

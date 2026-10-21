@@ -274,14 +274,25 @@ public sealed class MainForm : Form
         };
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
 
-        try
+        while (true)
         {
-            ReportExporter.Save(r, dlg.FileName);
-        }
-        catch (IOException ex)
-        {
-            ShowError("Could not write the file. Is it open in Excel?\n\n" + ex.Message);
-            return;
+            try
+            {
+                ReportExporter.Save(r, dlg.FileName);
+                break;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                var name = Path.GetFileName(dlg.FileName);
+                var msg = IsLocked(dlg.FileName)
+                    ? $"\"{name}\" is open in another program, probably Excel.\n\nClose it there and press Retry."
+                    : $"\"{name}\" could not be saved:\n{ex.Message}\n\nCheck that the folder is writable, or press Cancel and export to another location.";
+                if (MessageBox.Show(this, msg, "Cannot save", MessageBoxButtons.RetryCancel, MessageBoxIcon.Warning) != DialogResult.Retry)
+                {
+                    SetStatus("Export cancelled.");
+                    return;
+                }
+            }
         }
 
         _settings.Exports.Add(new ExportRecord
@@ -375,6 +386,19 @@ public sealed class MainForm : Form
 
     private void ShowError(string message) =>
         MessageBox.Show(this, message, "Part-DB Procurement", MessageBoxButtons.OK, MessageBoxIcon.Error);
+
+    /// <summary>True when another program (typically Excel) holds the file open.</summary>
+    private static bool IsLocked(string path)
+    {
+        if (!File.Exists(path)) return false;
+        try
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            return false;
+        }
+        catch (IOException) { return true; }
+        catch (UnauthorizedAccessException) { return !new FileInfo(path).IsReadOnly; }
+    }
 
     private static string SafePath(string p)
     {
