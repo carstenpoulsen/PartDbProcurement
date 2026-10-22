@@ -3,8 +3,9 @@ namespace PartDbProcurement.Core;
 /// <summary>Turns a ProcurementReport into an Excel workbook.</summary>
 public static class ReportExporter
 {
-    public static string DefaultFileName(ProcurementReport r) =>
-        $"{r.Bom.ProjectName}_order_{r.Builds}x_{r.PulledAt:yyyy-MM-dd}.xlsx";
+    public static string DefaultFileName(ProcurementReport r) => r.IsCombined
+        ? $"{string.Join("+", r.Projects.Select(p => $"{p.Bom.ProjectName}_{p.Builds}x"))}_order_{r.PulledAt:yyyy-MM-dd}.xlsx"
+        : $"{r.Projects[0].Bom.ProjectName}_order_{r.Projects[0].Builds}x_{r.PulledAt:yyyy-MM-dd}.xlsx";
 
     public static void Save(ProcurementReport r, string path)
     {
@@ -18,7 +19,7 @@ public static class ReportExporter
     private static XSheet OrderSheet(ProcurementReport r)
     {
         var s = new XSheet("Order list");
-        s.Add(new XCell($"{r.Bom.ProjectName} - order for {r.Builds} build(s)", XStyle.Title));
+        s.Add(new XCell(r.IsCombined ? $"Combined order: {r.Title}" : $"{r.Projects[0].Bom.ProjectName} - order for {r.Projects[0].Builds} build(s)", XStyle.Title));
         s.Add(T($"Part-DB data pulled {r.PulledAt:yyyy-MM-dd HH:mm}. To order = need + minimum stock - stock, raised to the smallest price break."));
         s.Blank();
         s.HeaderRow = 3;
@@ -38,7 +39,7 @@ public static class ReportExporter
                 T(l.Part?.Mpn ?? l.Bom.Mpn), T(l.Part?.Manufacturer), T(l.Bom.PartDbId), T(l.Part?.Name ?? l.Bom.Value),
                 T(l.Part?.Description ?? l.Bom.Description), N(l.Need), N(l.Stock), N(l.MinStock), N(l.ToOrder),
                 N(l.OrderQty), l.Price == null ? T("") : new XCell(l.Price.UnitPrice, XStyle.Price), T(l.Price?.Currency),
-                l.LineTotal == null ? T("") : new XCell(l.LineTotal.Value, XStyle.Money), T(l.Bom.ReferenceList));
+                l.LineTotal == null ? T("") : new XCell(l.LineTotal.Value, XStyle.Money), T(l.ReferenceText(r.IsCombined)));
         }
 
         // Totals per supplier and currency, below the table.
@@ -61,10 +62,13 @@ public static class ReportExporter
     {
         var s = new XSheet("Stock coverage");
         s.HeaderRow = 0;
-        s.Add(H("Status"), H("Part-DB ID"), H("Name"), H("MPN"), H("Value"), H("Per build"), H("Need"), H("Stock"),
+        // One "per build" column per project.
+        var perBuild = r.IsCombined ? r.Projects.Select(p => H($"{p.Bom.ProjectName} per build")) : new[] { H("Per build") };
+        s.Add(new[] { H("Status"), H("Part-DB ID"), H("Name"), H("MPN"), H("Value") }.Concat(perBuild).Concat(new[] { H("Need"), H("Stock"),
               H("Min. stock"), H("After build"), H("Short for build"), H("To order"), H("Storage location"),
-              H("Supplier"), H("SPN"), H("Other suppliers"), H("References"), H("Part-DB"));
-        s.Widths = new double[] { 20, 10, 22, 22, 14, 9, 8, 8, 10, 11, 13, 9, 18, 14, 26, 30, 40, 10 };
+              H("Supplier"), H("SPN"), H("Other suppliers"), H("References"), H("Part-DB") }).ToArray());
+        s.Widths = new double[] { 20, 10, 22, 22, 14 }.Concat(r.Projects.Select(_ => r.IsCombined ? 14d : 9d))
+            .Concat(new double[] { 8, 8, 10, 11, 13, 9, 18, 14, 26, 30, 40, 10 }).ToArray();
         foreach (var l in r.Lines)
         {
             var st = l.Status switch
@@ -74,11 +78,12 @@ public static class ReportExporter
                 LineStatus.StockUnknown => XStyle.Yellow,
                 _ => XStyle.Red,
             };
-            s.Add(T(l.StatusText, st), T(l.Bom.PartDbId), T(l.Part?.Name ?? ""), T(l.Part?.Mpn ?? l.Bom.Mpn), T(l.Bom.Value),
-                N(l.PerBuild), N(l.Need), N(l.Stock), N(l.MinStock), N(l.AfterBuild), N(l.ShortForBuild), N(l.ToOrder),
+            s.Add(new[] { T(l.StatusText, st), T(l.Bom.PartDbId), T(l.Part?.Name ?? ""), T(l.Part?.Mpn ?? l.Bom.Mpn), T(l.Bom.Value) }
+                .Concat(r.Projects.Select(p => N(l.PerBuildIn(p))))
+                .Concat(new[] { N(l.Need), N(l.Stock), N(l.MinStock), N(l.AfterBuild), N(l.ShortForBuild), N(l.ToOrder),
                 T(string.Join(", ", l.Part?.StorageLocations ?? new())), T(l.Offer?.Supplier), T(l.Offer?.Spn),
-                T(l.OtherOffers), T(l.Bom.ReferenceList),
-                l.Part == null ? T("") : XCell.Link(l.Part.Url, "open"));
+                T(l.OtherOffers), T(l.ReferenceText(r.IsCombined)),
+                l.Part == null ? T("") : XCell.Link(l.Part.Url, "open") }).ToArray());
         }
         return s;
     }
@@ -86,28 +91,45 @@ public static class ReportExporter
     private static XSheet NoIdSheet(ProcurementReport r)
     {
         var s = new XSheet("No Part-DB ID");
-        if (r.Bom.WithoutId.Count == 0)
+        if (r.Projects.All(p => p.Bom.WithoutId.Count == 0))
         {
             s.Add(new XCell("All counted symbols have a Part-DB ID.", XStyle.Green));
             return s;
         }
+        // Without an ID, lines of different projects cannot be matched, so they are listed per project.
+        var head = new List<XCell> { H("Value"), H("Footprint"), H("MPN"), H("Description"), H("Per build"), H("Need"), H("References"), H("Sheet") };
+        var widths = new List<double> { 16, 36, 22, 36, 9, 8, 40, 16 };
+        if (r.IsCombined) { head.Insert(0, H("Project")); widths.Insert(0, 16); }
         s.HeaderRow = 0;
-        s.Add(H("Value"), H("Footprint"), H("MPN"), H("Description"), H("Per build"), H("Need"), H("References"), H("Sheet"));
-        s.Widths = new double[] { 16, 36, 22, 36, 9, 8, 40, 16 };
-        foreach (var g in r.Bom.WithoutId)
-            s.Add(T(g.Value, XStyle.Red), T(g.Footprint), T(g.Mpn), T(g.Description), N(g.QuantityPerBuild),
-                N(g.QuantityPerBuild * r.Builds), T(g.ReferenceList), T(string.Join(", ", g.Sheets)));
+        s.Add(head.ToArray());
+        s.Widths = widths.ToArray();
+        foreach (var p in r.Projects)
+            foreach (var g in p.Bom.WithoutId)
+            {
+                var row = new List<XCell> { T(g.Value, XStyle.Red), T(g.Footprint), T(g.Mpn), T(g.Description), N(g.QuantityPerBuild),
+                    N(g.QuantityPerBuild * p.Builds), T(g.ReferenceList), T(string.Join(", ", g.Sheets)) };
+                if (r.IsCombined) row.Insert(0, T(p.Bom.ProjectName));
+                s.Add(row.ToArray());
+            }
         return s;
     }
 
     private static XSheet ExcludedSheet(ProcurementReport r)
     {
         var s = new XSheet("Excluded");
+        var head = new List<XCell> { H("Reference"), H("Value"), H("Reason"), H("Part-DB ID"), H("Sheet") };
+        var widths = new List<double> { 12, 18, 18, 10, 16 };
+        if (r.IsCombined) { head.Insert(0, H("Project")); widths.Insert(0, 16); }
         s.HeaderRow = 0;
-        s.Add(H("Reference"), H("Value"), H("Reason"), H("Part-DB ID"), H("Sheet"));
-        s.Widths = new double[] { 12, 18, 18, 10, 16 };
-        foreach (var (sym, why) in r.Bom.Excluded.OrderBy(e => e.Symbol.Reference, RefComparer.Instance))
-            s.Add(T(sym.Reference), T(sym.Value), T(why), T(sym.PartDbId), T(sym.SheetName));
+        s.Add(head.ToArray());
+        s.Widths = widths.ToArray();
+        foreach (var p in r.Projects)
+            foreach (var (sym, why) in p.Bom.Excluded.OrderBy(e => e.Symbol.Reference, RefComparer.Instance))
+            {
+                var row = new List<XCell> { T(sym.Reference), T(sym.Value), T(why), T(sym.PartDbId), T(sym.SheetName) };
+                if (r.IsCombined) row.Insert(0, T(p.Bom.ProjectName));
+                s.Add(row.ToArray());
+            }
         return s;
     }
 
@@ -116,20 +138,26 @@ public static class ReportExporter
         var s = new XSheet("Info");
         s.Widths = new double[] { 26, 90 };
         s.Add(new XCell("Procurement report", XStyle.Title));
-        s.Add(T("Project", XStyle.Bold), T(r.Bom.ProjectFile));
-        s.Add(T("Builds", XStyle.Bold), N(r.Builds));
+        foreach (var p in r.Projects)
+        {
+            if (r.IsCombined) s.Blank();
+            s.Add(T("Project", XStyle.Bold), T(p.Bom.ProjectFile));
+            s.Add(T("Builds", XStyle.Bold), N(p.Builds));
+            s.Add(T("Schematic last saved", XStyle.Bold), T(p.Bom.NewestSchematicWriteUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")));
+            s.Add(T("Schematic files", XStyle.Bold), T(string.Join(", ", p.Bom.SchematicFiles.Select(Path.GetFileName))));
+            s.Add(T("Parts counted per build", XStyle.Bold), N(p.Bom.Counted.Count));
+            s.Add(T("BOM lines with Part-DB ID", XStyle.Bold), N(p.Bom.WithId.Count));
+            s.Add(T("BOM lines without ID", XStyle.Bold), N(p.Bom.WithoutId.Count));
+            s.Add(T("Excluded symbols", XStyle.Bold), N(p.Bom.Excluded.Count));
+            foreach (var w in p.Bom.Warnings) s.Add(T("Warning", XStyle.Bold), T(w, XStyle.Yellow));
+        }
+        if (r.IsCombined) s.Blank();
         s.Add(T("Part-DB", XStyle.Bold), T(r.PartDbUrl));
         s.Add(T("Part-DB data pulled", XStyle.Bold), T(r.PulledAt.ToString("yyyy-MM-dd HH:mm:ss")));
-        s.Add(T("Schematic last saved", XStyle.Bold), T(r.Bom.NewestSchematicWriteUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")));
-        s.Add(T("Schematic files", XStyle.Bold), T(string.Join(", ", r.Bom.SchematicFiles.Select(Path.GetFileName))));
-        s.Add(T("Parts counted per build", XStyle.Bold), N(r.Bom.Counted.Count));
-        s.Add(T("BOM lines with Part-DB ID", XStyle.Bold), N(r.Bom.WithId.Count));
-        s.Add(T("BOM lines without ID", XStyle.Bold), N(r.Bom.WithoutId.Count));
-        s.Add(T("Excluded symbols", XStyle.Bold), N(r.Bom.Excluded.Count));
+        if (r.IsCombined) s.Add(T("Part-DB IDs (all projects)", XStyle.Bold), N(r.Lines.Count));
         s.Add(T("Lines to order", XStyle.Bold), N(r.OrderLines.Count()));
         if (r.MissingIds.Count > 0)
             s.Add(T("IDs not found in Part-DB", XStyle.Bold), T(string.Join(", ", r.MissingIds), XStyle.Red));
-        foreach (var w in r.Bom.Warnings) s.Add(T("Warning", XStyle.Bold), T(w, XStyle.Yellow));
         return s;
     }
 }

@@ -23,6 +23,8 @@ This tool avoids both. It reads the KiCad project files directly, without changi
 - Follows hierarchical sheets, including sheets used more than once, and merges multi-unit symbols.
 - Respects **Exclude from BOM** and **DNP**, on symbols as well as on whole sheets. DNP parts can optionally be counted.
 - Looks up stock, minimum stock, suppliers, supplier part numbers and price breaks **live** via the Part-DB API.
+- **Combines several projects into one purchase**, e.g. a main board and its front panel, each with its own number of builds. A part used by both is ordered once, for the summed need.
+- Remembers the **5 most recently used projects** together with their number of builds.
 - Calculates **to order = need + minimum stock − stock**, rounded up to the supplier's smallest price break.
 - Excel output: order list per supplier with totals, a stock-coverage overview, parts without a Part-DB ID, excluded parts, and run info.
 - Warns before you **order twice**: if an order list for the project was already exported, if the schematic changed after the pull, or if the Part-DB data is old.
@@ -39,8 +41,8 @@ This tool avoids both. It reads the KiCad project files directly, without changi
 1. Download the latest release from [Releases](https://github.com/carstenpoulsen/PartDbProcurement/releases), or build it yourself (see below).
 2. In Part-DB, create an API token: **User settings → API tokens**. A **read-only** token is enough; you can reuse the token you created for KiCad.
 3. Start `PartDbProcurement.exe` and fill in:
-   - **KiCad project**: your `.kicad_pro` file
-   - **Number of builds**
+   - **KiCad projects**: add your `.kicad_pro` file with **Add…**, pick it from **Recent ▾**, or drop it on the list. Add more projects to buy for all of them in one order list; **Remove** (or Del) takes one off.
+   - **Builds**: the number of builds of each project. Click the cell and type to change it.
    - **Part-DB URL**, e.g. `http://partdb.local:8080`. The KiCad API URL works too; only scheme, host and port are used.
    - **API token**
 
@@ -49,7 +51,7 @@ This tool avoids both. It reads the KiCad project files directly, without changi
 
 Changing the number of builds recalculates immediately. Double-click a row to open the part in Part-DB.
 
-You can also pass a project on the command line: `PartDbProcurement.exe "C:\path\MyBoard.kicad_pro"`.
+You can also pass one or more projects on the command line: `PartDbProcurement.exe "C:\path\MyBoard.kicad_pro" "C:\path\Panel.kicad_pro"`.
 
 ## How it counts
 
@@ -62,12 +64,13 @@ You can also pass a project on the command line: `PartDbProcurement.exe "C:\path
 | Multi-unit symbols (U1A, U1B) | Counted once |
 | Sheet used twice | Counted twice, with the real references from KiCad's instance data |
 | Symbols without a Part-DB ID | Not dropped: listed on the sheet *No Part-DB ID* |
+| Several projects | Same Part-DB ID in several projects: one line, need summed. Parts without an ID are listed per project. |
 
 ## How it calculates
 
 | Value | Definition |
 |---|---|
-| Need | per build × number of builds |
+| Need | per build × number of builds, summed over the projects of the purchase |
 | Stock | Part-DB *total in stock*: all storage locations; expired lots and lots with unknown amount count as 0 |
 | To order | need + minimum stock − stock, if positive |
 | Order qty | *to order*, raised to the smallest price break of the supplier (MOQ) |
@@ -78,7 +81,7 @@ Status colours: green = OK · yellow = below minimum stock after the build, or s
 
 ## Settings and security
 
-Settings are stored in `%AppData%\PartDbProcurement\settings.json`. The API token is encrypted with Windows DPAPI for the current Windows user. Delete the file, or revoke the token in Part-DB, to remove it.
+Settings, the current project list and the recent projects are stored in `%AppData%\PartDbProcurement\settings.json`. The API token is encrypted with Windows DPAPI for the current Windows user. Delete the file, or revoke the token in Part-DB, to remove it.
 
 ## Known limitations
 

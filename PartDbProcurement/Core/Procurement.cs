@@ -2,15 +2,39 @@ namespace PartDbProcurement.Core;
 
 public enum LineStatus { Ok, BelowMinimum, Short, StockUnknown, NotInPartDb }
 
-/// <summary>One BOM line combined with live Part-DB data.</summary>
+/// <summary>One project in a purchase: its BOM and the number of boards to build.</summary>
+public sealed class ProjectRun
+{
+    public required BomResult Bom { get; init; }
+    public required int Builds { get; init; }
+}
+
+/// <summary>How one project of the purchase uses a part.</summary>
+public sealed class ProjectUse
+{
+    public required ProjectRun Project { get; init; }
+    public required BomGroup Group { get; init; }
+    public int PerBuild => Group.QuantityPerBuild;
+    public int Need => PerBuild * Project.Builds;
+}
+
+/// <summary>One Part-DB part combined with live Part-DB data, summed over all projects of the purchase.</summary>
 public sealed class ProcurementLine
 {
-    public required BomGroup Bom { get; init; }
+    /// <summary>One entry per project that uses the part, in project order.</summary>
+    public required IReadOnlyList<ProjectUse> Uses { get; init; }
     public PartDbPart? Part { get; init; }
-    public int Builds { get; init; }
 
-    public int PerBuild => Bom.QuantityPerBuild;
-    public int Need => PerBuild * Builds;
+    /// <summary>BOM data (ID, value, MPN, description) of the first project that uses the part.</summary>
+    public BomGroup Bom => Uses[0].Group;
+    public int PerBuild => Uses.Sum(u => u.PerBuild);
+    public int Need => Uses.Sum(u => u.Need);
+    public int PerBuildIn(ProjectRun project) => Uses.FirstOrDefault(u => u.Project == project)?.PerBuild ?? 0;
+
+    /// <summary>References; prefixed with the project name when the purchase has several projects.</summary>
+    public string ReferenceText(bool combined) => !combined ? Bom.ReferenceList :
+        string.Join(" · ", Uses.Select(u => $"{u.Project.Bom.ProjectName}: {u.Group.ReferenceList}"));
+
     public double Stock => Part?.Stock ?? 0;
     public double MinStock => Part?.MinStock ?? 0;
     public double AfterBuild => Stock - Need;
@@ -48,29 +72,43 @@ public sealed class ProcurementLine
 
 public sealed class ProcurementReport
 {
-    public required BomResult Bom { get; init; }
-    public required int Builds { get; init; }
+    /// <summary>The projects of the purchase; usually one.</summary>
+    public required IReadOnlyList<ProjectRun> Projects { get; init; }
     public required string PartDbUrl { get; init; }
     public required DateTime PulledAt { get; init; }
     public List<ProcurementLine> Lines { get; } = new();
     public List<string> MissingIds { get; init; } = new();
 
+    public bool IsCombined => Projects.Count > 1;
+    /// <summary>"Board ×3", or "BoardA ×3 + BoardB ×2" for a combined purchase.</summary>
+    public string Title => string.Join(" + ", Projects.Select(p => $"{p.Bom.ProjectName} ×{p.Builds}"));
+
     public IEnumerable<ProcurementLine> OrderLines => Lines.Where(l => l.OrderQty > 0);
 
-    public static ProcurementReport Build(BomResult bom, IReadOnlyDictionary<string, PartDbPart> parts,
-        List<string> missing, int builds, string url, DateTime pulledAt)
+    public static ProcurementReport Build(IReadOnlyList<ProjectRun> projects, IReadOnlyDictionary<string, PartDbPart> parts,
+        List<string> missing, string url, DateTime pulledAt)
     {
-        var r = new ProcurementReport { Bom = bom, Builds = builds, PartDbUrl = url, PulledAt = pulledAt, MissingIds = missing };
-        foreach (var g in bom.WithId)
-            r.Lines.Add(new ProcurementLine { Bom = g, Part = parts.GetValueOrDefault(g.PartDbId!), Builds = builds });
+        var r = new ProcurementReport { Projects = projects, PartDbUrl = url, PulledAt = pulledAt, MissingIds = missing };
+        // Same Part-DB ID in several projects: one line, need summed. Order: first project's order, then new IDs of the next.
+        var uses = new Dictionary<string, List<ProjectUse>>();
+        var order = new List<string>();
+        foreach (var p in projects)
+            foreach (var g in p.Bom.WithId)
+            {
+                if (!uses.TryGetValue(g.PartDbId!, out var list)) { uses[g.PartDbId!] = list = new(); order.Add(g.PartDbId!); }
+                list.Add(new ProjectUse { Project = p, Group = g });
+            }
+        foreach (var id in order)
+            r.Lines.Add(new ProcurementLine { Uses = uses[id], Part = parts.GetValueOrDefault(id) });
         return r;
     }
 
-    /// <summary>Same Part-DB data, different number of builds (no new pull needed).</summary>
-    public ProcurementReport WithBuilds(int builds)
+    /// <summary>Same Part-DB data, different numbers of builds (one per project, no new pull needed).</summary>
+    public ProcurementReport WithBuilds(IReadOnlyList<int> builds)
     {
-        var r = new ProcurementReport { Bom = Bom, Builds = builds, PartDbUrl = PartDbUrl, PulledAt = PulledAt, MissingIds = MissingIds };
-        foreach (var l in Lines) r.Lines.Add(new ProcurementLine { Bom = l.Bom, Part = l.Part, Builds = builds });
-        return r;
+        if (builds.Count != Projects.Count) throw new ArgumentException("One number of builds per project expected.", nameof(builds));
+        var runs = Projects.Select((p, i) => new ProjectRun { Bom = p.Bom, Builds = builds[i] }).ToList();
+        var parts = Lines.Where(l => l.Part != null).ToDictionary(l => l.Bom.PartDbId!, l => l.Part!);
+        return Build(runs, parts, MissingIds, PartDbUrl, PulledAt);
     }
 }

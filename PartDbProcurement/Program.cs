@@ -2,7 +2,7 @@ namespace PartDbProcurement;
 
 internal static class Program
 {
-    /// <summary>Optional argument: path to a .kicad_pro file to preload.</summary>
+    /// <summary>Optional arguments: one or more .kicad_pro files to preload as one purchase.</summary>
     [STAThread]
     private static void Main(string[] args)
     {
@@ -18,6 +18,6 @@ internal static class Program
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        Application.Run(new MainForm(args.Length > 0 ? args[0] : null));
+        Application.Run(new MainForm(args));
     }
 }
