@@ -7,16 +7,18 @@ public static class ReportExporter
         ? $"{string.Join("+", r.Projects.Select(p => $"{p.Bom.ProjectName}_{p.Builds}x"))}_order_{r.PulledAt:yyyy-MM-dd}.xlsx"
         : $"{r.Projects[0].Bom.ProjectName}_order_{r.Projects[0].Builds}x_{r.PulledAt:yyyy-MM-dd}.xlsx";
 
-    public static void Save(ProcurementReport r, string path)
+    /// <param name="remembered">Notepad items to add to the order list with the reference REMEMBER.</param>
+    public static void Save(ProcurementReport r, string path, IReadOnlyList<RememberItem>? remembered = null)
     {
-        XlsxWriter.Save(path, new[] { OrderSheet(r), CoverageSheet(r), NoIdSheet(r), ExcludedSheet(r), InfoSheet(r) });
+        remembered ??= Array.Empty<RememberItem>();
+        XlsxWriter.Save(path, new[] { OrderSheet(r, remembered), CoverageSheet(r), NoIdSheet(r), ExcludedSheet(r), InfoSheet(r, remembered) });
     }
 
     private static XCell N(double v, XStyle s = XStyle.Integer) => new(v, s);
     private static XCell T(string? v, XStyle s = XStyle.Default) => new(v ?? "", s);
     private static XCell H(string v) => new(v, XStyle.Header);
 
-    private static XSheet OrderSheet(ProcurementReport r)
+    private static XSheet OrderSheet(ProcurementReport r, IReadOnlyList<RememberItem> remembered)
     {
         var s = new XSheet("Order list");
         s.Add(new XCell(r.IsCombined ? $"Combined order: {r.Title}" : $"{r.Projects[0].Bom.ProjectName} - order for {r.Projects[0].Builds} build(s)", XStyle.Title));
@@ -28,19 +30,13 @@ public static class ReportExporter
               H("Line total"), H("References"));
         s.Widths = new double[] { 14, 26, 22, 16, 10, 22, 36, 8, 8, 10, 9, 10, 11, 9, 12, 40 };
 
-        var lines = r.OrderLines
-            .OrderBy(l => string.IsNullOrEmpty(l.Offer?.Supplier) ? "~" : l.Offer!.Supplier, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(l => l.Part?.Mpn ?? l.Bom.Mpn, StringComparer.OrdinalIgnoreCase).ToList();
-
-        foreach (var l in lines)
-        {
-            var hl = l.Status == LineStatus.Short || l.Status == LineStatus.NotInPartDb ? XStyle.Red : XStyle.Default;
-            s.Add(T(l.Offer?.Supplier is { Length: > 0 } sup ? sup : "(no supplier)", hl), T(l.Offer?.Spn),
-                T(l.Part?.Mpn ?? l.Bom.Mpn), T(l.Part?.Manufacturer), T(l.Bom.PartDbId), T(l.Part?.Name ?? l.Bom.Value),
-                T(l.Part?.Description ?? l.Bom.Description), N(l.Need), N(l.Stock), N(l.MinStock), N(l.ToOrder),
-                N(l.OrderQty), l.Price == null ? T("") : new XCell(l.Price.UnitPrice, XStyle.Price), T(l.Price?.Currency),
-                l.LineTotal == null ? T("") : new XCell(l.LineTotal.Value, XStyle.Money), T(l.ReferenceText(r.IsCombined)));
-        }
+        var lines = r.OrderLines.ToList();
+        // Part-DB lines and notepad items in one table, sorted by supplier, then MPN / order number.
+        var rows = lines.Select(l => (Supplier: l.Offer?.Supplier ?? "", Key: l.Part?.Mpn ?? l.Bom.Mpn, Cells: PartRow(r, l)))
+            .Concat(remembered.Select(i => (i.Supplier, Key: i.OrderNumber.Length > 0 ? i.OrderNumber : i.Description, Cells: RememberRow(i))))
+            .OrderBy(x => string.IsNullOrEmpty(x.Supplier) ? "~" : x.Supplier, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase);
+        foreach (var x in rows) s.Add(x.Cells);
 
         // Totals per supplier and currency, below the table.
         s.Blank();
@@ -54,9 +50,27 @@ public static class ReportExporter
         }
         int unpriced = lines.Count(l => l.LineTotal == null);
         if (unpriced > 0) s.Add(T($"{unpriced} line(s) have no price in Part-DB and are not in the totals."));
-        if (lines.Count == 0) s.Add(new XCell("Nothing to order: stock covers all builds and minimum stock levels.", XStyle.Green));
+        if (remembered.Count > 0) s.Add(T($"{remembered.Count} line(s) from the notepad ({RememberItem.Reference}) have no price and are not in the totals."));
+        if (lines.Count == 0) s.Add(new XCell("Nothing to order from Part-DB: stock covers all builds and minimum stock levels.", XStyle.Green));
         return s;
     }
+
+    private static XCell[] PartRow(ProcurementReport r, ProcurementLine l)
+    {
+        var hl = l.Status == LineStatus.Short || l.Status == LineStatus.NotInPartDb ? XStyle.Red : XStyle.Default;
+        return new[] { T(l.Offer?.Supplier is { Length: > 0 } sup ? sup : "(no supplier)", hl), T(l.Offer?.Spn),
+            T(l.Part?.Mpn ?? l.Bom.Mpn), T(l.Part?.Manufacturer), T(l.Bom.PartDbId), T(l.Part?.Name ?? l.Bom.Value),
+            T(l.Part?.Description ?? l.Bom.Description), N(l.Need), N(l.Stock), N(l.MinStock), N(l.ToOrder),
+            N(l.OrderQty), l.Price == null ? T("") : new XCell(l.Price.UnitPrice, XStyle.Price), T(l.Price?.Currency),
+            l.LineTotal == null ? T("") : new XCell(l.LineTotal.Value, XStyle.Money), T(l.ReferenceText(r.IsCombined)) };
+    }
+
+    /// <summary>A notepad item: order number in the SPN column, remarks as description, reference REMEMBER.</summary>
+    private static XCell[] RememberRow(RememberItem i) => new[]
+    {
+        T(i.Supplier.Length > 0 ? i.Supplier : "(no supplier)"), T(i.OrderNumber), T(""), T(""), T(""), T(i.Description), T(i.Remarks),
+        T(""), T(""), T(""), N(i.Quantity), N(i.Quantity), T(""), T(""), T(""), T(RememberItem.Reference, XStyle.Yellow),
+    };
 
     private static XSheet CoverageSheet(ProcurementReport r)
     {
@@ -133,7 +147,7 @@ public static class ReportExporter
         return s;
     }
 
-    private static XSheet InfoSheet(ProcurementReport r)
+    private static XSheet InfoSheet(ProcurementReport r, IReadOnlyList<RememberItem> remembered)
     {
         var s = new XSheet("Info");
         s.Widths = new double[] { 26, 90 };
@@ -156,6 +170,7 @@ public static class ReportExporter
         s.Add(T("Part-DB data pulled", XStyle.Bold), T(r.PulledAt.ToString("yyyy-MM-dd HH:mm:ss")));
         if (r.IsCombined) s.Add(T("Part-DB IDs (all projects)", XStyle.Bold), N(r.Lines.Count));
         s.Add(T("Lines to order", XStyle.Bold), N(r.OrderLines.Count()));
+        if (remembered.Count > 0) s.Add(T("Notepad items (REMEMBER)", XStyle.Bold), N(remembered.Count));
         if (r.MissingIds.Count > 0)
             s.Add(T("IDs not found in Part-DB", XStyle.Bold), T(string.Join(", ", r.MissingIds), XStyle.Red));
         return s;

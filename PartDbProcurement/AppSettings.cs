@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using PartDbProcurement.Core;
 
 namespace PartDbProcurement;
 
@@ -39,6 +40,8 @@ public sealed class AppSettings
     public string PartDbUrl { get; set; } = "";
     public string? TokenProtected { get; set; }
     public List<ExportRecord> Exports { get; set; } = new();
+    /// <summary>Ad hoc items to remember when ordering; offered for every order list.</summary>
+    public List<RememberItem> Notepad { get; set; } = new();
 
     private static string Folder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PartDbProcurement");
     private static string FilePath => Path.Combine(Folder, "settings.json");

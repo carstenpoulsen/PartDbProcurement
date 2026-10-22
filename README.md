@@ -27,6 +27,7 @@ This tool avoids both. It reads the KiCad project files directly, without changi
 - Remembers the **5 most recently used projects** together with their number of builds.
 - Calculates **to order = need + minimum stock − stock**, rounded up to the supplier's smallest price break.
 - Excel output: order list per supplier with totals, a stock-coverage overview, parts without a Part-DB ID, excluded parts, and run info.
+- A **notepad** for things to remember when ordering, such as solder tip tinner or other consumables, with or without an order number. You are reminded on every export and can add them to the order list with the reference `REMEMBER`.
 - Warns before you **order twice**: if an order list for the project was already exported, if the schematic changed after the pull, or if the Part-DB data is old.
 - Read-only: the tool never changes anything in Part-DB.
 
@@ -50,6 +51,8 @@ This tool avoids both. It reads the KiCad project files directly, without changi
 4. Press **Test** to check the connection, then **Pull from Part-DB**, then **Export to Excel…**.
 
 Changing the number of builds recalculates immediately. Double-click a row to open the part in Part-DB.
+
+Use **Notepad…** to note things to buy next time that are not in a schematic. Ticked items show up in the grid after a pull, and **Export to Excel…** asks whether to put them on the order list.
 
 You can also pass one or more projects on the command line: `PartDbProcurement.exe "C:\path\MyBoard.kicad_pro" "C:\path\Panel.kicad_pro"`.
 

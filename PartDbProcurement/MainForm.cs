@@ -24,6 +24,7 @@ public sealed class MainForm : Form
     private readonly TextBox _txtToken = new() { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
     private readonly Button _btnPull = new() { Text = "Pull from Part-DB", AutoSize = true, Padding = new Padding(8, 2, 8, 2) };
     private readonly Button _btnExport = new() { Text = "Export to Excel…", AutoSize = true, Enabled = false, Padding = new Padding(8, 2, 8, 2) };
+    private readonly Button _btnNotepad = new() { AutoSize = true, Padding = new Padding(8, 2, 8, 2), Margin = new Padding(16, 3, 3, 3) };
     private readonly Label _lblSummary = new() { AutoSize = true, Margin = new Padding(12, 8, 3, 3) };
     private readonly DataGridView _grid = new()
     {
@@ -41,6 +42,7 @@ public sealed class MainForm : Form
     private static readonly Color Green = Color.FromArgb(0xC6, 0xEF, 0xCE);
     private static readonly Color Yellow = Color.FromArgb(0xFF, 0xE6, 0x99);
     private static readonly Color Red = Color.FromArgb(0xF8, 0xCB, 0xAD);
+    private static readonly Color Blue = Color.FromArgb(0xDD, 0xEB, 0xF7);
 
     /// <param name="projectArgs">.kicad_pro files from the command line; empty to restore the last purchase.</param>
     public MainForm(IReadOnlyList<string> projectArgs)
@@ -73,8 +75,14 @@ public sealed class MainForm : Form
         _btnTest.Click += async (_, _) => await TestConnection();
         _btnPull.Click += async (_, _) => await Pull();
         _btnExport.Click += (_, _) => Export();
+        _btnNotepad.Click += (_, _) => EditNotepad();
         _chkDnp.CheckedChanged += (_, _) => MarkStale("DNP setting changed. Pull again to apply.");
-        _grid.CellDoubleClick += (_, e) => OpenPartInBrowser(e.RowIndex);
+        _grid.CellDoubleClick += (_, e) =>
+        {
+            if (e.RowIndex >= 0 && _grid.Rows[e.RowIndex].Tag is RememberItem) EditNotepad();
+            else OpenPartInBrowser(e.RowIndex);
+        };
+        UpdateNotepadButton();
         FormClosing += (_, _) => SaveSettings();
 
         SetStatus("Add one or more KiCad projects and press \"Pull from Part-DB\".");
@@ -111,6 +119,7 @@ public sealed class MainForm : Form
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 6, 0, 0), WrapContents = false };
         actions.Controls.Add(_btnPull);
         actions.Controls.Add(_btnExport);
+        actions.Controls.Add(_btnNotepad);
         actions.Controls.Add(_lblSummary);
         table.Controls.Add(actions, 1, 4);
         table.SetColumnSpan(actions, 2);
@@ -399,6 +408,23 @@ public sealed class MainForm : Form
             if (MessageBox.Show(this, msg, "Already exported", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
         }
 
+        // 4) Notepad: things to remember when ordering.
+        var remembered = new List<RememberItem>();
+        var offered = _settings.Notepad.Where(i => i.OnOrderList).ToList();
+        if (offered.Count > 0)
+        {
+            var parked = _settings.Notepad.Count - offered.Count;
+            var msg = $"Your notepad has {offered.Count} item(s) to remember:\n" +
+                      string.Join("\n", offered.Take(15).Select(i => "• " + i.Summary +
+                          (i.LastOrdered is { } d ? $"   (last ordered {d:yyyy-MM-dd})" : ""))) +
+                      (offered.Count > 15 ? $"\n… and {offered.Count - 15} more" : "") +
+                      (parked > 0 ? $"\n\n{parked} other item(s) are not ticked \"On order list\" and are left out." : "") +
+                      $"\n\nAdd them to the order list with the reference {RememberItem.Reference}?";
+            var a = MessageBox.Show(this, msg, "Remember", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Information);
+            if (a == DialogResult.Cancel) return;
+            if (a == DialogResult.Yes) remembered = offered;
+        }
+
         var projectDir = Path.GetDirectoryName(r.Projects[0].Bom.ProjectFile)!;
         var orderingDir = Path.Combine(projectDir, "ordering");
         using var dlg = new SaveFileDialog
@@ -414,7 +440,7 @@ public sealed class MainForm : Form
         {
             try
             {
-                ReportExporter.Save(r, dlg.FileName);
+                ReportExporter.Save(r, dlg.FileName, remembered);
                 break;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -442,8 +468,20 @@ public sealed class MainForm : Form
             });
         }
         foreach (var p in r.Projects.Reverse()) _settings.Remember(p.Bom.ProjectFile, p.Builds);
+        foreach (var i in remembered) i.LastOrdered = exportedAt;
         SaveSettings();
-        SetStatus($"Exported {r.OrderLines.Count()} order line(s) to {dlg.FileName}");
+        SetStatus($"Exported {r.OrderLines.Count()} order line(s){(remembered.Count > 0 ? $" and {remembered.Count} notepad item(s)" : "")} to {dlg.FileName}");
+
+        if (remembered.Count > 0 &&
+            MessageBox.Show(this, $"{remembered.Count} notepad item(s) are on the order list.\n\nRemove them from the notepad now?\n" +
+                    "Choose No to keep them, e.g. if you are not sure the order will be placed.",
+                "Remember", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) == DialogResult.Yes)
+        {
+            _settings.Notepad.RemoveAll(remembered.Contains);
+            SaveSettings();
+            UpdateNotepadButton();
+            FillGrid();
+        }
 
         if (MessageBox.Show(this, "Order list saved.\n\nOpen it in Excel now?", "Exported",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes)
@@ -485,6 +523,19 @@ public sealed class MainForm : Form
             };
             if (l.OrderQty > 0) row.Cells["OrderQty"].Style.Font = _boldFont ??= new Font(_grid.Font, FontStyle.Bold);
         }
+        var remembered = _settings.Notepad.Where(i => i.OnOrderList).ToList();
+        foreach (var i in remembered)
+        {
+            var row = _grid.Rows[_grid.Rows.Add()];
+            void Set(string column, object? value) => row.Cells[column].Value = value;
+            Set("Status", RememberItem.Reference); Set("Name", i.Description); Set("ToOrder", (double)i.Quantity); Set("OrderQty", (double)i.Quantity);
+            Set("Supplier", i.Supplier); Set("Spn", i.OrderNumber);
+            Set("Refs", RememberItem.Reference + (i.Remarks.Length > 0 ? " · " + i.Remarks : ""));
+            row.Tag = i;
+            row.Cells["Status"].Style.BackColor = Blue;
+            row.Cells["Status"].ToolTipText = "From the notepad. Double-click to edit.";
+            row.Cells["OrderQty"].Style.Font = _boldFont ??= new Font(_grid.Font, FontStyle.Bold);
+        }
         _grid.ResumeLayout();
 
         var order = r.OrderLines.ToList();
@@ -492,7 +543,8 @@ public sealed class MainForm : Form
         var withoutId = r.Projects.Sum(p => p.Bom.WithoutId.Count);
         _lblSummary.Text = $"{r.Lines.Count} lines   ·   {order.Count} to order   ·   {shortCount} short for " +
                            (r.IsCombined ? r.Title : $"{r.Projects[0].Builds} build(s)") +
-                           (withoutId > 0 ? $"   ·   {withoutId} without Part-DB ID" : "");
+                           (withoutId > 0 ? $"   ·   {withoutId} without Part-DB ID" : "") +
+                           (remembered.Count > 0 ? $"   ·   {remembered.Count} to remember" : "");
     }
 
     /// <summary>One "per build" column per project, placed before "Need".</summary>
@@ -509,6 +561,25 @@ public sealed class MainForm : Form
             col.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight;
             _grid.Columns.Insert(at + i, col);
         }
+    }
+
+    // ------------------------------------------------------------------ notepad
+
+    private void EditNotepad()
+    {
+        using var dlg = new NotepadForm(_settings.Notepad);
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        _settings.Notepad = dlg.Items;
+        SaveSettings();
+        UpdateNotepadButton();
+        FillGrid();
+    }
+
+    private void UpdateNotepadButton()
+    {
+        var n = _settings.Notepad.Count(i => i.OnOrderList);
+        _btnNotepad.Text = n > 0 ? $"Notepad ({n})…" : "Notepad…";
+        _btnNotepad.Font = n > 0 ? _boldFont ??= new Font(Font, FontStyle.Bold) : Font;
     }
 
     private void OpenPartInBrowser(int rowIndex)
