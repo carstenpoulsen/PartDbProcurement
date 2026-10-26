@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Notepad for things to remember when ordering**, e.g. consumables that are not in a schematic. Each item has a description, an optional supplier and order number, a quantity and remarks. Open it with **Notepad…**; the button shows how many items are waiting.
+- After a pull, notepad items are listed at the bottom of the grid with status `REMEMBER`. On export the app lists them and asks whether to add them to the order list; they appear with the reference `REMEMBER`, sorted in with their supplier.
+- **Picking and placement sheets.** The Excel export has one sheet per project (*Pick <project>*) with Name, MPN, Value, per build, Need, storage location, supplier, SPN, references and a Part-DB link. It is sorted by storage location, so the parts can be picked in one round; parts without a Part-DB ID are listed at the bottom.
+- After such an export, the items get a *last ordered* date and can be removed from the notepad. Untick *On order list* to keep an item without ordering it.
+
 ## 1.1.0 (2026-10-22)
 
 ### Added
