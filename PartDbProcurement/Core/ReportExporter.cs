@@ -11,7 +11,8 @@ public static class ReportExporter
     public static void Save(ProcurementReport r, string path, IReadOnlyList<RememberItem>? remembered = null)
     {
         remembered ??= Array.Empty<RememberItem>();
-        XlsxWriter.Save(path, new[] { OrderSheet(r, remembered), CoverageSheet(r), NoIdSheet(r), ExcludedSheet(r), InfoSheet(r, remembered) });
+        XlsxWriter.Save(path, new[] { OrderSheet(r, remembered), CoverageSheet(r) }.Concat(PickSheets(r))
+            .Concat(new[] { NoIdSheet(r), ExcludedSheet(r), InfoSheet(r, remembered) }).ToList());
     }
 
     private static XCell N(double v, XStyle s = XStyle.Integer) => new(v, s);
@@ -100,6 +101,41 @@ public static class ReportExporter
                 l.Part == null ? T("") : XCell.Link(l.Part.Url, "open") }).ToArray());
         }
         return s;
+    }
+
+    /// <summary>One picking and placement list per project, sorted by storage location so the parts can be picked in one round.</summary>
+    private static IEnumerable<XSheet> PickSheets(ProcurementReport r)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in r.Projects)
+        {
+            // Sheet names are limited to 31 characters and must be unique.
+            var name = $"Pick {p.Bom.ProjectName}";
+            if (name.Length > 31) name = name[..31];
+            for (int n = 2; !names.Add(name); n++) name = $"{(name.Length > 26 ? name[..26] : name)} ({n})";
+
+            var s = new XSheet(name);
+            s.Add(new XCell($"{p.Bom.ProjectName} - picking and placement for {p.Builds} build(s)", XStyle.Title));
+            s.Add(T($"Part-DB data pulled {r.PulledAt:yyyy-MM-dd HH:mm}. Need = per build x {p.Builds} build(s), for this project only."));
+            s.Blank();
+            s.HeaderRow = 3;
+            s.Add(H("Name"), H("MPN"), H("Value"), H("Per build"), H("Need"), H("Storage location"), H("Supplier"), H("SPN"), H("References"), H("Part-DB"));
+            s.Widths = new double[] { 22, 22, 14, 9, 8, 22, 14, 26, 50, 10 };
+
+            var rows = r.Lines.Select(l => (Line: l, Use: l.Uses.FirstOrDefault(u => u.Project == p))).Where(x => x.Use != null)
+                .Select(x => (Location: string.Join(", ", x.Line.Part?.StorageLocations ?? new()), x.Line, Group: x.Use!.Group))
+                .OrderBy(x => x.Location.Length == 0 ? "~" : x.Location, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.Group.References.OrderBy(f => f, RefComparer.Instance).FirstOrDefault() ?? "", RefComparer.Instance);
+            foreach (var (location, l, g) in rows)
+                s.Add(T(l.Part?.Name ?? ""), T(l.Part?.Mpn ?? g.Mpn), T(g.Value), N(g.QuantityPerBuild), N(g.QuantityPerBuild * p.Builds),
+                    T(location), T(l.Offer?.Supplier), T(l.Offer?.Spn), T(g.ReferenceList),
+                    l.Part == null ? T("") : XCell.Link(l.Part.Url, "open"));
+            // Parts without a Part-DB ID still have to be picked and placed.
+            foreach (var g in p.Bom.WithoutId)
+                s.Add(T(""), T(g.Mpn), T(g.Value, XStyle.Red), N(g.QuantityPerBuild), N(g.QuantityPerBuild * p.Builds),
+                    T("(no Part-DB ID)", XStyle.Red), T(""), T(""), T(g.ReferenceList));
+            yield return s;
+        }
     }
 
     private static XSheet NoIdSheet(ProcurementReport r)
